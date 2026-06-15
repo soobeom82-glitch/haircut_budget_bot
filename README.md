@@ -3,7 +3,7 @@
 텔레그램 채팅방에 `이발 3만`, `염색 4만`, `충전 30만`처럼 입력하면:
 
 - 메시지 시각을 기준으로 구글 캘린더에 일정을 생성하고
-- 기존 일정 제목의 `잔액 ...원`을 읽어 현재 예치금을 계산한 뒤
+- Redis에 저장된 현재 잔액을 읽어 예치금을 계산한 뒤
 - 새 잔액을 반영한 제목으로 저장합니다.
 
 예시 제목:
@@ -26,10 +26,11 @@
 
 1. 텔레그램 웹훅이 메시지를 받습니다.
 2. 메시지에서 항목명과 금액을 파싱합니다.
-3. 기존 구글 캘린더 이벤트 제목 또는 설명에서 가장 최근 `잔액 ...원` 값을 찾습니다.
-4. 새 잔액을 계산합니다.
-5. 메시지가 발생한 시각으로 새 캘린더 이벤트를 만듭니다.
-6. 텔레그램에 처리 결과를 답장합니다.
+3. Redis에 저장된 현재 잔액을 읽습니다.
+4. 값이 없으면 `INITIAL_BALANCE_WON`을 시작 금액으로 씁니다.
+5. 새 잔액을 계산합니다.
+6. 메시지가 발생한 시각으로 새 캘린더 이벤트를 만듭니다.
+7. 텔레그램에 처리 결과를 답장합니다.
 
 ## 설정
 
@@ -48,7 +49,7 @@
 4. 연결할 구글 캘린더의 `설정 및 공유`에서 서비스 계정 이메일에 `일정 변경` 권한을 부여합니다.
 5. 다운로드한 JSON 파일 경로를 `GOOGLE_SERVICE_ACCOUNT_FILE`에 넣습니다.
 
-이 봇은 서비스 계정으로 캘린더를 읽고 씁니다. 기존에 수동으로 만든 일정도 같은 캘린더에 있으면 잔액 계산에 사용됩니다.
+이 봇은 서비스 계정으로 캘린더를 읽고 씁니다. 캘린더는 거래 이력 저장용이고, 현재 잔액 원장은 Redis에 저장합니다.
 
 ### 3. 환경 변수
 
@@ -58,8 +59,9 @@
 
 - `GOOGLE_CALENDAR_ID`: `primary` 또는 특정 캘린더 ID
 - `EVENT_PREFIX`: 제목 앞에 항상 붙일 텍스트. 예: `서하 은호`
-- `INITIAL_BALANCE_WON`: 캘린더에 아직 잔액 기록이 하나도 없을 때 시작 금액
+- `INITIAL_BALANCE_WON`: Redis에 아직 잔액이 없을 때 시작 금액
 - `TELEGRAM_ALLOWED_CHAT_IDS`: 허용할 채팅방 ID. 비워두면 모든 채팅 허용
+- `KV_REST_API_URL`, `KV_REST_API_TOKEN`: Upstash Redis 연결 정보
 
 ## 실행
 
@@ -89,11 +91,21 @@ https://<your-vercel-domain>/telegram/webhook
 - `TELEGRAM_ALLOWED_CHAT_IDS`
 - `GOOGLE_CALENDAR_ID`
 - `GOOGLE_SERVICE_ACCOUNT_FILE` 대신 `GOOGLE_SERVICE_ACCOUNT_JSON` 권장
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
 - `CALENDAR_TIMEZONE`
 - `EVENT_PREFIX`
 - `INITIAL_BALANCE_WON`
 
 서비스 계정 JSON은 파일 업로드보다 `GOOGLE_SERVICE_ACCOUNT_JSON`에 JSON 문자열 전체를 넣는 방식이 Vercel에서는 더 편합니다.
+
+### 추천 저장소
+
+Vercel 기준 무료 DB로는 `Upstash Redis`를 추천합니다.
+
+- 잔액처럼 작은 상태값 저장에 충분합니다.
+- Vercel Marketplace로 연결하면 `KV_REST_API_URL`, `KV_REST_API_TOKEN`이 자동으로 들어옵니다.
+- 이 프로젝트는 별도 SDK 없이 REST 방식으로 바로 붙도록 구현돼 있습니다.
 
 ### 주의 사항
 
@@ -121,6 +133,7 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 
 - `/help`: 사용법 보기
 - `/balance`: 현재 잔액 조회
+- `/setbalance 36만`: 현재 잔액 강제 설정
 - `/chatid`: 현재 채팅방 ID 확인
 
 ## 메모

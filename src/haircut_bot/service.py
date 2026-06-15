@@ -7,7 +7,13 @@ from zoneinfo import ZoneInfo
 
 from .config import AppConfig
 from .google_calendar import GoogleCalendarClient
-from .parsing import build_event_title, format_delta, parse_transaction
+from .parsing import (
+    build_event_title,
+    format_delta,
+    parse_amount_to_won,
+    parse_transaction,
+)
+from .state_store import RedisStateStore
 from .store import ProcessedUpdateStore, append_ledger_entry
 from .telegram_api import TelegramBotClient
 
@@ -36,11 +42,13 @@ class HaircutBotService:
         calendar_client: GoogleCalendarClient,
         telegram_client: TelegramBotClient,
         store: ProcessedUpdateStore,
+        state_store: RedisStateStore,
     ) -> None:
         self._config = config
         self._calendar_client = calendar_client
         self._telegram_client = telegram_client
         self._store = store
+        self._state_store = state_store
         self._tz = ZoneInfo(config.calendar_timezone)
 
     def handle_update(self, update: dict) -> dict:
@@ -83,7 +91,7 @@ class HaircutBotService:
             )
             if existing_event:
                 self._store.mark(update_id)
-                existing_balance = self._calendar_client.get_latest_balance(event_time)
+                existing_balance = self._get_current_balance(event_time)
                 return ServiceResult(
                     ok=True,
                     message="duplicate_update_remote",
@@ -108,7 +116,7 @@ class HaircutBotService:
                 self._store.mark(update_id)
             return ServiceResult(ok=False, message="invalid_format").to_dict()
 
-        current_balance = self._calendar_client.get_latest_balance(event_time)
+        current_balance = self._get_current_balance(event_time)
         next_balance = current_balance + parsed.delta_won
 
         duration_minutes = self._config.default_event_duration_minutes
@@ -153,6 +161,7 @@ class HaircutBotService:
             "calendar_event_link": created_event.html_link,
         }
         append_ledger_entry(self._config.ledger_file, ledger_entry)
+        self._save_current_balance(next_balance)
         if isinstance(update_id, int):
             self._store.mark(update_id)
 
@@ -180,13 +189,51 @@ class HaircutBotService:
     def _handle_command(self, text: str, chat_id: int, message_id: int | None) -> ServiceResult:
         command = text.split()[0].split("@", 1)[0].lower()
         if command == "/balance":
-            balance = self._calendar_client.get_latest_balance(datetime.now(tz=self._tz))
+            balance = self._get_current_balance(datetime.now(tz=self._tz))
             self._safe_send_message(
                 chat_id,
                 f"현재 잔액은 {balance:,}원입니다.",
                 reply_to_message_id=message_id,
             )
             return ServiceResult(ok=True, message="balance_sent", balance_won=balance)
+
+        if command == "/setbalance":
+            parts = text.split(maxsplit=1)
+            if len(parts) != 2:
+                self._safe_send_message(
+                    chat_id,
+                    "사용법: /setbalance 36만",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="set_balance_usage")
+
+            amount_won = parse_amount_to_won(
+                parts[1],
+                default_amount_unit=self._config.default_amount_unit,
+            )
+            if amount_won is None:
+                self._safe_send_message(
+                    chat_id,
+                    "금액 형식이 맞지 않아요. 예: /setbalance 36만",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="set_balance_invalid_amount")
+
+            if not self._state_store.enabled:
+                self._safe_send_message(
+                    chat_id,
+                    "Redis가 아직 연결되지 않았어요. Upstash를 먼저 연결해 주세요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="state_store_not_configured")
+
+            self._save_current_balance(amount_won)
+            self._safe_send_message(
+                chat_id,
+                f"현재 잔액을 {amount_won:,}원으로 설정했어요.",
+                reply_to_message_id=message_id,
+            )
+            return ServiceResult(ok=True, message="balance_updated", balance_won=amount_won)
 
         if command == "/chatid":
             self._safe_send_message(
@@ -205,6 +252,7 @@ class HaircutBotService:
                 "",
                 "명령어",
                 "- /balance",
+                "- /setbalance 36만",
                 "- /chatid",
             ]
         )
@@ -237,3 +285,13 @@ class HaircutBotService:
             )
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to send Telegram confirmation to chat_id=%s", chat_id)
+
+    def _get_current_balance(self, reference_time: datetime) -> int:
+        if self._state_store.enabled:
+            return self._state_store.get_balance().balance_won
+        return self._calendar_client.get_latest_balance(reference_time)
+
+    def _save_current_balance(self, balance_won: int) -> None:
+        if not self._state_store.enabled:
+            return
+        self._state_store.set_balance(balance_won)

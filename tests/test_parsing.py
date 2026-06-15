@@ -3,6 +3,7 @@ import unittest
 from src.haircut_bot.parsing import (
     build_display_label,
     build_event_title,
+    parse_amount_to_won,
     parse_balance_from_text,
     parse_transaction,
 )
@@ -43,6 +44,11 @@ class ParsingTests(unittest.TestCase):
     def test_parse_balance_from_summary_or_description(self) -> None:
         self.assertEqual(parse_balance_from_text("이발 (3만) 잔액 330,000원"), 330000)
         self.assertEqual(parse_balance_from_text("balance_won=290000"), 290000)
+
+    def test_parse_amount_to_won(self) -> None:
+        self.assertEqual(parse_amount_to_won("36만"), 360000)
+        self.assertEqual(parse_amount_to_won("360000원"), 360000)
+        self.assertEqual(parse_amount_to_won("36"), 360000)
 
 
 if __name__ == "__main__":

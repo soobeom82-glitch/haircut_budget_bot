@@ -30,6 +30,8 @@ class AppConfig:
     recharge_event_duration_minutes: int
     initial_balance_won: int
     balance_lookback_days: int
+    redis_rest_url: str
+    redis_rest_token: str
     processed_updates_file: Path
     ledger_file: Path
 
@@ -129,6 +131,14 @@ def load_config(base_dir: str | None = None) -> AppConfig:
         ),
         initial_balance_won=_parse_int(os.getenv("INITIAL_BALANCE_WON", ""), 0),
         balance_lookback_days=_parse_int(os.getenv("BALANCE_LOOKBACK_DAYS", ""), 3650),
+        redis_rest_url=(
+            os.getenv("KV_REST_API_URL", "").strip()
+            or os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
+        ),
+        redis_rest_token=(
+            os.getenv("KV_REST_API_TOKEN", "").strip()
+            or os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        ),
         processed_updates_file=root / processed_updates_file,
         ledger_file=root / ledger_file,
     )

@@ -68,6 +68,15 @@ def format_delta(delta_won: int) -> str:
     return f"{symbol}{abs(delta_won):,}원"
 
 
+def parse_amount_to_won(text: str, default_amount_unit: str = "man") -> int | None:
+    compact = text.strip().replace(" ", "")
+    match = re.fullmatch(r"(?P<amount>\d[\d,]*(?:\.\d+)?)(?P<unit>만|천|원)?", compact)
+    if not match:
+        return None
+    unit = (match.group("unit") or "").strip()
+    return _to_won(match.group("amount"), unit, default_amount_unit)
+
+
 def parse_balance_from_text(text: str) -> int | None:
     match = BALANCE_PATTERN.search(text)
     if match:
@@ -118,4 +127,3 @@ def _format_short_amount(amount_won: int) -> str:
     if amount_won % 1000 == 0:
         return f"{amount_won // 1000}천"
     return f"{amount_won:,}원"
-
