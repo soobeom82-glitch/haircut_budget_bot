@@ -133,6 +133,8 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 
 - `/help`: 사용법 보기
 - `/balance`: 현재 잔액 조회
+- `/history`: 최근 이력 5건 조회
+- `/history 10`: 최근 이력 최대 10건 조회
 - `/setbalance 36만`: 현재 잔액 강제 설정
 - `/chatid`: 현재 채팅방 ID 확인
 

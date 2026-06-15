@@ -14,6 +14,7 @@ from .parsing import (
     parse_transaction,
 )
 from .state_store import RedisStateStore
+from .state_store import StoredHistoryItem
 from .store import ProcessedUpdateStore, append_ledger_entry
 from .telegram_api import TelegramBotClient
 
@@ -162,6 +163,16 @@ class HaircutBotService:
         }
         append_ledger_entry(self._config.ledger_file, ledger_entry)
         self._save_current_balance(next_balance)
+        self._append_history(
+            StoredHistoryItem(
+                action=parsed.kind,
+                label=parsed.label,
+                delta_won=parsed.delta_won,
+                balance_won=next_balance,
+                event_time=event_time.isoformat(),
+                amount_label=parsed.amount_label,
+            )
+        )
         if isinstance(update_id, int):
             self._store.mark(update_id)
 
@@ -190,12 +201,48 @@ class HaircutBotService:
         command = text.split()[0].split("@", 1)[0].lower()
         if command == "/balance":
             balance = self._get_current_balance(datetime.now(tz=self._tz))
+            history = self._get_history(1)
+            lines = [f"현재 잔액은 {balance:,}원입니다."]
+            if history:
+                lines.extend(
+                    [
+                        "",
+                        "최근 거래",
+                        self._format_history_line(history[0]),
+                    ]
+                )
             self._safe_send_message(
                 chat_id,
-                f"현재 잔액은 {balance:,}원입니다.",
+                "\n".join(lines),
                 reply_to_message_id=message_id,
             )
             return ServiceResult(ok=True, message="balance_sent", balance_won=balance)
+
+        if command == "/history":
+            parts = text.split(maxsplit=1)
+            limit = 5
+            if len(parts) == 2 and parts[1].strip().isdigit():
+                limit = max(1, min(int(parts[1].strip()), 10))
+
+            history = self._get_history(limit)
+            if not history:
+                self._safe_send_message(
+                    chat_id,
+                    "최근 이력이 아직 없어요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=True, message="history_empty")
+
+            lines = ["최근 이력"]
+            for item in history:
+                lines.append(self._format_history_line(item))
+
+            self._safe_send_message(
+                chat_id,
+                "\n".join(lines),
+                reply_to_message_id=message_id,
+            )
+            return ServiceResult(ok=True, message="history_sent")
 
         if command == "/setbalance":
             parts = text.split(maxsplit=1)
@@ -228,6 +275,16 @@ class HaircutBotService:
                 return ServiceResult(ok=False, message="state_store_not_configured")
 
             self._save_current_balance(amount_won)
+            self._append_history(
+                StoredHistoryItem(
+                    action="set_balance",
+                    label="잔액 기준 설정",
+                    delta_won=0,
+                    balance_won=amount_won,
+                    event_time=datetime.now(tz=self._tz).isoformat(),
+                    amount_label="",
+                )
+            )
             self._safe_send_message(
                 chat_id,
                 f"현재 잔액을 {amount_won:,}원으로 설정했어요.",
@@ -252,6 +309,7 @@ class HaircutBotService:
                 "",
                 "명령어",
                 "- /balance",
+                "- /history",
                 "- /setbalance 36만",
                 "- /chatid",
             ]
@@ -295,3 +353,29 @@ class HaircutBotService:
         if not self._state_store.enabled:
             return
         self._state_store.set_balance(balance_won)
+
+    def _append_history(self, item: StoredHistoryItem) -> None:
+        if not self._state_store.enabled:
+            return
+        self._state_store.append_history(item)
+
+    def _get_history(self, limit: int) -> list[StoredHistoryItem]:
+        if not self._state_store.enabled:
+            return []
+        return self._state_store.get_history(limit)
+
+    def _format_history_line(self, item: StoredHistoryItem) -> str:
+        timestamp = self._format_event_time(item.event_time)
+        if item.action == "set_balance":
+            return f"{timestamp} {item.label} -> {item.balance_won:,}원"
+        return (
+            f"{timestamp} {item.label} {format_delta(item.delta_won)} "
+            f"잔액 {item.balance_won:,}원"
+        )
+
+    def _format_event_time(self, raw_value: str) -> str:
+        try:
+            event_time = datetime.fromisoformat(raw_value)
+        except ValueError:
+            return raw_value
+        return event_time.astimezone(self._tz).strftime("%m-%d %H:%M")
