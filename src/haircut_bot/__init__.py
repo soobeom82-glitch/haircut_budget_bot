@@ -1,0 +1,2 @@
+"""Haircut calendar bot package."""
+
