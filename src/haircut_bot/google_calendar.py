@@ -30,6 +30,17 @@ class CalendarEventSnapshot:
     description: str
 
 
+@dataclass
+class CalendarEventDetail:
+    event_id: str
+    summary: str
+    description: str
+    start_value: str
+    end_value: str
+    status: str
+    html_link: str
+
+
 class GoogleCalendarClient:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
@@ -93,6 +104,46 @@ class GoogleCalendarClient:
                 )
         return None
 
+    def list_calendar_events(
+        self,
+        calendar_id: str,
+        access_token: str,
+        time_min: datetime,
+        time_max: datetime,
+        max_results: int = 10,
+    ) -> list[CalendarEventDetail]:
+        encoded_calendar_id = quote(calendar_id, safe="")
+        query = urlencode(
+            {
+                "singleEvents": "true",
+                "orderBy": "startTime",
+                "maxResults": str(max_results),
+                "timeMin": time_min.isoformat(),
+                "timeMax": time_max.isoformat(),
+            }
+        )
+        url = (
+            f"https://www.googleapis.com/calendar/v3/calendars/"
+            f"{encoded_calendar_id}/events?{query}"
+        )
+        response = self._request_json_with_token("GET", url, access_token)
+        items = response.get("items", [])
+        return [
+            CalendarEventDetail(
+                event_id=item.get("id", ""),
+                summary=item.get("summary", "(제목 없음)"),
+                description=item.get("description", ""),
+                start_value=item.get("start", {}).get("dateTime")
+                or item.get("start", {}).get("date", ""),
+                end_value=item.get("end", {}).get("dateTime")
+                or item.get("end", {}).get("date", ""),
+                status=item.get("status", ""),
+                html_link=item.get("htmlLink", ""),
+            )
+            for item in items
+            if item.get("status") != "cancelled"
+        ]
+
     def _list_recent_events(self, reference_time: datetime) -> list[dict]:
         encoded_calendar_id = quote(self._config.google_calendar_id, safe="")
         time_min = (reference_time - timedelta(days=self._config.balance_lookback_days)).isoformat()
@@ -115,6 +166,15 @@ class GoogleCalendarClient:
 
     def _request_json(self, method: str, url: str, payload: dict | None = None) -> dict:
         token = self._get_access_token()
+        return self._request_json_with_token(method, url, token, payload)
+
+    def _request_json_with_token(
+        self,
+        method: str,
+        url: str,
+        token: str,
+        payload: dict | None = None,
+    ) -> dict:
         body = None
         headers = {"Authorization": f"Bearer {token}"}
         if payload is not None:

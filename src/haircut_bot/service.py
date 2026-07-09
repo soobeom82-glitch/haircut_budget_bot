@@ -3,18 +3,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 import logging
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from .config import AppConfig
-from .google_calendar import GoogleCalendarClient
+from .google_calendar import CalendarEventDetail, GoogleCalendarClient
+from .google_oauth import GoogleOAuthClient
 from .parsing import (
     build_event_title,
     format_delta,
     parse_amount_to_won,
     parse_transaction,
 )
-from .state_store import RedisStateStore
-from .state_store import StoredHistoryItem
+from .state_store import RedisStateStore, StoredHistoryItem, StoredOAuthCredential
 from .store import ProcessedUpdateStore, append_ledger_entry
 from .telegram_api import TelegramBotClient
 
@@ -41,12 +42,14 @@ class HaircutBotService:
         self,
         config: AppConfig,
         calendar_client: GoogleCalendarClient,
+        oauth_client: GoogleOAuthClient,
         telegram_client: TelegramBotClient,
         store: ProcessedUpdateStore,
         state_store: RedisStateStore,
     ) -> None:
         self._config = config
         self._calendar_client = calendar_client
+        self._oauth_client = oauth_client
         self._telegram_client = telegram_client
         self._store = store
         self._state_store = state_store
@@ -218,6 +221,76 @@ class HaircutBotService:
             )
             return ServiceResult(ok=True, message="balance_sent", balance_won=balance)
 
+        if command == "/workauth":
+            auth_link = self._build_workauth_entry_link(chat_id)
+            if not auth_link:
+                self._safe_send_message(
+                    chat_id,
+                    "Google OAuth 설정이 아직 안 됐어요. `GOOGLE_OAUTH_CLIENT_ID`, "
+                    "`GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, "
+                    "`GOOGLE_OAUTH_STATE_SECRET`, `PUBLIC_BASE_URL`를 확인해 주세요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="oauth_not_configured")
+            self._safe_send_message(
+                chat_id,
+                "\n".join(
+                    [
+                        "회사 캘린더 읽기 권한 연결 링크",
+                        auth_link,
+                    ]
+                ),
+                reply_to_message_id=message_id,
+            )
+            return ServiceResult(ok=True, message="workauth_sent")
+
+        if command == "/worktoday":
+            if not self._config.company_google_calendar_id:
+                self._safe_send_message(
+                    chat_id,
+                    "회사 캘린더 ID가 없어요. `COMPANY_GOOGLE_CALENDAR_ID`를 설정해 주세요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="company_calendar_not_configured")
+
+            credential = self._state_store.get_company_oauth_credential()
+            if credential is None:
+                self._safe_send_message(
+                    chat_id,
+                    "회사 계정 OAuth 연결이 아직 없어요. 먼저 `/workauth`를 실행해 주세요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=False, message="company_oauth_not_connected")
+
+            now = datetime.now(tz=self._tz)
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            token = self._oauth_client.refresh_access_token(credential.refresh_token)
+            events = self._calendar_client.list_calendar_events(
+                calendar_id=self._config.company_google_calendar_id,
+                access_token=token.access_token,
+                time_min=day_start,
+                time_max=day_end,
+                max_results=20,
+            )
+            if not events:
+                self._safe_send_message(
+                    chat_id,
+                    "오늘 회사 일정이 없어요.",
+                    reply_to_message_id=message_id,
+                )
+                return ServiceResult(ok=True, message="worktoday_empty")
+
+            lines = [f"오늘 회사 일정 {len(events)}건"]
+            for event in events:
+                lines.append(self._format_calendar_event_line(event))
+            self._safe_send_message(
+                chat_id,
+                "\n".join(lines),
+                reply_to_message_id=message_id,
+            )
+            return ServiceResult(ok=True, message="worktoday_sent")
+
         if command == "/history":
             parts = text.split(maxsplit=1)
             limit = 5
@@ -311,6 +384,8 @@ class HaircutBotService:
                 "- /balance",
                 "- /history",
                 "- /setbalance 36만",
+                "- /workauth",
+                "- /worktoday",
                 "- /chatid",
             ]
         )
@@ -379,3 +454,81 @@ class HaircutBotService:
         except ValueError:
             return raw_value
         return event_time.astimezone(self._tz).strftime("%m-%d %H:%M")
+
+    def get_workauth_start_url(self, chat_id: int | None = None) -> str | None:
+        if not self._oauth_client.enabled or not self._config.public_base_url:
+            return None
+        base = self._config.public_base_url.rstrip("/")
+        if chat_id is None:
+            return f"{base}/google/oauth/start"
+        return f"{base}/google/oauth/start?chat_id={quote(str(chat_id), safe='')}"
+
+    def build_google_oauth_authorization_url(self, chat_id: int | None = None) -> str:
+        return self._oauth_client.build_authorization_url(chat_id)
+
+    def complete_google_oauth_callback(self, params: dict[str, str]) -> str:
+        if "error" in params:
+            raise RuntimeError(f"Google OAuth error: {params['error']}")
+
+        raw_state = params.get("state", "")
+        code = params.get("code", "")
+        if not raw_state or not code:
+            raise RuntimeError("Missing OAuth state or authorization code.")
+
+        state = self._oauth_client.verify_state(raw_state)
+        tokens = self._oauth_client.exchange_code(code)
+        if not tokens.refresh_token:
+            raise RuntimeError(
+                "No refresh token returned. Re-run consent with prompt=consent."
+            )
+
+        email = tokens.email or self._config.google_oauth_user_email or ""
+        if (
+            self._config.google_oauth_user_email
+            and email
+            and email.lower() != self._config.google_oauth_user_email.lower()
+        ):
+            raise RuntimeError(
+                "Authorized account does not match GOOGLE_OAUTH_USER_EMAIL."
+            )
+        self._state_store.set_company_oauth_credential(
+            StoredOAuthCredential(
+                refresh_token=tokens.refresh_token,
+                email=email,
+                scope=tokens.scope,
+                updated_at=datetime.now(tz=self._tz).isoformat(),
+            )
+        )
+        if state.chat_id is not None:
+            self._safe_send_message(
+                state.chat_id,
+                "\n".join(
+                    [
+                        "회사 구글 캘린더 OAuth 연결이 완료됐어요.",
+                        f"연결 계정: {email or '(이메일 확인 불가)'}",
+                        "이제 `/worktoday`로 오늘 일정을 확인할 수 있어요.",
+                    ]
+                ),
+            )
+        return email
+
+    def _build_workauth_entry_link(self, chat_id: int) -> str | None:
+        return self.get_workauth_start_url(chat_id)
+
+    def _format_calendar_event_line(self, event: CalendarEventDetail) -> str:
+        start = self._format_calendar_time_value(event.start_value)
+        end = self._format_calendar_time_value(event.end_value)
+        if end:
+            return f"- {start}~{end} {event.summary}"
+        return f"- {start} {event.summary}"
+
+    def _format_calendar_time_value(self, raw_value: str) -> str:
+        if not raw_value:
+            return ""
+        if "T" not in raw_value:
+            return raw_value
+        try:
+            dt = datetime.fromisoformat(raw_value)
+        except ValueError:
+            return raw_value
+        return dt.astimezone(self._tz).strftime("%H:%M")

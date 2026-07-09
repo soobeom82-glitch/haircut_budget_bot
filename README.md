@@ -91,8 +91,15 @@ https://<your-vercel-domain>/telegram/webhook
 - `TELEGRAM_ALLOWED_CHAT_IDS`
 - `GOOGLE_CALENDAR_ID`
 - `GOOGLE_SERVICE_ACCOUNT_FILE` 대신 `GOOGLE_SERVICE_ACCOUNT_JSON` 권장
+- `COMPANY_GOOGLE_CALENDAR_ID`
 - `KV_REST_API_URL`
 - `KV_REST_API_TOKEN`
+- `PUBLIC_BASE_URL`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REDIRECT_URI`
+- `GOOGLE_OAUTH_STATE_SECRET`
+- `GOOGLE_OAUTH_USER_EMAIL`
 - `CALENDAR_TIMEZONE`
 - `EVENT_PREFIX`
 - `INITIAL_BALANCE_WON`
@@ -136,6 +143,8 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 - `/history`: 최근 이력 5건 조회
 - `/history 10`: 최근 이력 최대 10건 조회
 - `/setbalance 36만`: 현재 잔액 강제 설정
+- `/workauth`: 회사 구글 계정 OAuth 연결 링크 받기
+- `/worktoday`: 오늘 회사 캘린더 일정 읽기
 - `/chatid`: 현재 채팅방 ID 확인
 
 ## 메모

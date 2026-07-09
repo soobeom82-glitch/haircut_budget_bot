@@ -10,6 +10,7 @@ from .config import AppConfig
 
 BALANCE_KEY = "haircut:current_balance_won"
 HISTORY_KEY = "haircut:history"
+COMPANY_OAUTH_TOKEN_KEY = "haircut:company_google_oauth"
 MAX_HISTORY_ITEMS = 50
 
 
@@ -27,6 +28,14 @@ class StoredHistoryItem:
     balance_won: int
     event_time: str
     amount_label: str = ""
+
+
+@dataclass(frozen=True)
+class StoredOAuthCredential:
+    refresh_token: str
+    email: str
+    scope: str
+    updated_at: str
 
 
 class RedisStateStore:
@@ -97,6 +106,33 @@ class RedisStateStore:
                 )
             )
         return items
+
+    def set_company_oauth_credential(self, credential: StoredOAuthCredential) -> None:
+        if not self.enabled:
+            return
+        payload = quote(json.dumps(credential.__dict__, ensure_ascii=False), safe="")
+        self._request(
+            "POST",
+            f"/set/{quote(COMPANY_OAUTH_TOKEN_KEY, safe='')}/{payload}",
+        )
+
+    def get_company_oauth_credential(self) -> StoredOAuthCredential | None:
+        if not self.enabled:
+            return None
+        data = self._request("GET", f"/get/{quote(COMPANY_OAUTH_TOKEN_KEY, safe='')}")
+        result = data.get("result")
+        if not result:
+            return None
+        if isinstance(result, str):
+            payload = json.loads(result)
+        else:
+            payload = result
+        return StoredOAuthCredential(
+            refresh_token=str(payload["refresh_token"]),
+            email=str(payload.get("email", "")),
+            scope=str(payload.get("scope", "")),
+            updated_at=str(payload.get("updated_at", "")),
+        )
 
     def _request(self, method: str, path: str) -> dict:
         request = Request(

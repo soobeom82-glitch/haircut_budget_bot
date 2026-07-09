@@ -4,6 +4,7 @@ import logging
 
 from .config import AppConfig, load_config
 from .google_calendar import GoogleCalendarClient
+from .google_oauth import GoogleOAuthClient
 from .service import HaircutBotService
 from .state_store import RedisStateStore
 from .store import ProcessedUpdateStore
@@ -15,11 +16,13 @@ def build_service() -> tuple[AppConfig, HaircutBotService]:
     config = load_config()
     store = ProcessedUpdateStore(config.processed_updates_file)
     calendar_client = GoogleCalendarClient(config)
+    oauth_client = GoogleOAuthClient(config)
     telegram_client = TelegramBotClient(config.telegram_bot_token)
     state_store = RedisStateStore(config)
     service = HaircutBotService(
         config,
         calendar_client,
+        oauth_client,
         telegram_client,
         store,
         state_store,

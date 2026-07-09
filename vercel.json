@@ -13,6 +13,14 @@
     {
       "source": "/telegram/webhook",
       "destination": "/api/telegram/webhook"
+    },
+    {
+      "source": "/google/oauth/start",
+      "destination": "/api/google/oauth/start"
+    },
+    {
+      "source": "/google/oauth/callback",
+      "destination": "/api/google/oauth/callback"
     }
   ]
 }

@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class AppConfig:
     telegram_allowed_chat_ids: tuple[int, ...]
     google_calendar_id: str
     google_service_account: GoogleServiceAccountConfig
+    company_google_calendar_id: str
     calendar_timezone: str
     event_prefix: str
     default_amount_unit: str
@@ -30,6 +32,12 @@ class AppConfig:
     recharge_event_duration_minutes: int
     initial_balance_won: int
     balance_lookback_days: int
+    public_base_url: str
+    google_oauth_client_id: str
+    google_oauth_client_secret: str
+    google_oauth_redirect_uri: str
+    google_oauth_state_secret: str
+    google_oauth_user_email: str
     redis_rest_url: str
     redis_rest_token: str
     processed_updates_file: Path
@@ -102,6 +110,11 @@ def load_config(base_dir: str | None = None) -> AppConfig:
         os.getenv("PROCESSED_UPDATES_FILE", default_processed_updates_file)
     )
     ledger_file = Path(os.getenv("LEDGER_FILE", default_ledger_file))
+    google_oauth_redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip()
+    if not public_base_url and google_oauth_redirect_uri:
+        parts = urlsplit(google_oauth_redirect_uri)
+        public_base_url = f"{parts.scheme}://{parts.netloc}"
 
     return AppConfig(
         port=_parse_int(os.getenv("PORT", ""), 8080),
@@ -113,6 +126,7 @@ def load_config(base_dir: str | None = None) -> AppConfig:
         ),
         google_calendar_id=_require_env("GOOGLE_CALENDAR_ID"),
         google_service_account=_load_service_account(),
+        company_google_calendar_id=os.getenv("COMPANY_GOOGLE_CALENDAR_ID", "").strip(),
         calendar_timezone=os.getenv("CALENDAR_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul",
         event_prefix=os.getenv("EVENT_PREFIX", "").strip(),
         default_amount_unit=os.getenv("DEFAULT_AMOUNT_UNIT", "man").strip() or "man",
@@ -131,6 +145,12 @@ def load_config(base_dir: str | None = None) -> AppConfig:
         ),
         initial_balance_won=_parse_int(os.getenv("INITIAL_BALANCE_WON", ""), 0),
         balance_lookback_days=_parse_int(os.getenv("BALANCE_LOOKBACK_DAYS", ""), 3650),
+        public_base_url=public_base_url,
+        google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
+        google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+        google_oauth_redirect_uri=google_oauth_redirect_uri,
+        google_oauth_state_secret=os.getenv("GOOGLE_OAUTH_STATE_SECRET", "").strip(),
+        google_oauth_user_email=os.getenv("GOOGLE_OAUTH_USER_EMAIL", "").strip(),
         redis_rest_url=(
             os.getenv("KV_REST_API_URL", "").strip()
             or os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
