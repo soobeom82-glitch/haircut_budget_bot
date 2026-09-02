@@ -15,7 +15,12 @@ from .parsing import (
     parse_amount_to_won,
     parse_transaction,
 )
-from .state_store import RedisStateStore, StoredHistoryItem, StoredOAuthCredential
+from .state_store import (
+    PostgresStateStore,
+    StateStoreUnavailableError,
+    StoredHistoryItem,
+    StoredOAuthCredential,
+)
 from .store import ProcessedUpdateStore, append_ledger_entry
 from .telegram_api import TelegramBotClient
 
@@ -45,7 +50,7 @@ class HaircutBotService:
         oauth_client: GoogleOAuthClient,
         telegram_client: TelegramBotClient,
         store: ProcessedUpdateStore,
-        state_store: RedisStateStore,
+        state_store: PostgresStateStore,
     ) -> None:
         self._config = config
         self._calendar_client = calendar_client
@@ -81,124 +86,137 @@ class HaircutBotService:
                 self._store.mark(update_id)
             return ServiceResult(ok=True, message="ignored_non_text", ignored=True).to_dict()
 
-        if text.startswith("/"):
-            result = self._handle_command(text, chat_id, message_id)
+        try:
+            if text.startswith("/"):
+                result = self._handle_command(text, chat_id, message_id)
+                if isinstance(update_id, int):
+                    self._store.mark(update_id)
+                return result.to_dict()
+
+            event_time = datetime.fromtimestamp(int(message["date"]), tz=self._tz)
+            if isinstance(update_id, int):
+                existing_event = self._calendar_client.find_event_by_update_id(
+                    update_id,
+                    event_time,
+                )
+                if existing_event:
+                    self._store.mark(update_id)
+                    existing_balance = self._get_current_balance(event_time)
+                    return ServiceResult(
+                        ok=True,
+                        message="duplicate_update_remote",
+                        duplicate=True,
+                        balance_won=existing_balance,
+                        event_title=existing_event.summary,
+                        event_id=existing_event.event_id,
+                    ).to_dict()
+
+            parsed = parse_transaction(
+                text,
+                charge_keywords=self._config.charge_keywords,
+                default_amount_unit=self._config.default_amount_unit,
+            )
+            if not parsed:
+                self._safe_send_message(
+                    chat_id,
+                    "형식이 맞지 않아요. 예: `이발 3만`, `염색 4만`, `충전 30만`",
+                    reply_to_message_id=message_id,
+                )
+                if isinstance(update_id, int):
+                    self._store.mark(update_id)
+                return ServiceResult(ok=False, message="invalid_format").to_dict()
+
+            current_balance = self._get_current_balance(event_time)
+            next_balance = current_balance + parsed.delta_won
+
+            duration_minutes = self._config.default_event_duration_minutes
+            if parsed.kind == "charge":
+                duration_minutes = self._config.recharge_event_duration_minutes
+
+            title = build_event_title(
+                self._config.event_prefix,
+                parsed.label,
+                parsed.amount_won,
+                next_balance,
+            )
+            description = "\n".join(
+                [
+                    f"raw_message={parsed.raw_text}",
+                    f"label={parsed.normalized_label}",
+                    f"delta_won={parsed.delta_won}",
+                    f"balance_won={next_balance}",
+                    f"chat_id={chat_id}",
+                    f"message_id={message_id}",
+                    f"update_id={update_id}",
+                ]
+            )
+            created_event = self._calendar_client.create_event(
+                summary=title,
+                description=description,
+                start_time=event_time,
+                end_time=event_time + timedelta(minutes=duration_minutes),
+            )
+
+            ledger_entry = {
+                "processed_at": datetime.now(tz=self._tz).isoformat(),
+                "event_time": event_time.isoformat(),
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "update_id": update_id,
+                "title": title,
+                "raw_message": parsed.raw_text,
+                "delta_won": parsed.delta_won,
+                "balance_won": next_balance,
+                "calendar_event_id": created_event.event_id,
+                "calendar_event_link": created_event.html_link,
+            }
+            append_ledger_entry(self._config.ledger_file, ledger_entry)
+            self._save_current_balance(next_balance)
+            self._append_history(
+                StoredHistoryItem(
+                    action=parsed.kind,
+                    label=parsed.label,
+                    delta_won=parsed.delta_won,
+                    balance_won=next_balance,
+                    event_time=event_time.isoformat(),
+                    amount_label=parsed.amount_label,
+                )
+            )
             if isinstance(update_id, int):
                 self._store.mark(update_id)
-            return result.to_dict()
 
-        event_time = datetime.fromtimestamp(int(message["date"]), tz=self._tz)
-        if isinstance(update_id, int):
-            existing_event = self._calendar_client.find_event_by_update_id(
-                update_id,
-                event_time,
+            confirmation = "\n".join(
+                [
+                    f"{parsed.label} 처리 완료",
+                    f"변동 {format_delta(parsed.delta_won)}",
+                    f"잔액 {next_balance:,}원",
+                    title,
+                ]
             )
-            if existing_event:
-                self._store.mark(update_id)
-                existing_balance = self._get_current_balance(event_time)
-                return ServiceResult(
-                    ok=True,
-                    message="duplicate_update_remote",
-                    duplicate=True,
-                    balance_won=existing_balance,
-                    event_title=existing_event.summary,
-                    event_id=existing_event.event_id,
-                ).to_dict()
-
-        parsed = parse_transaction(
-            text,
-            charge_keywords=self._config.charge_keywords,
-            default_amount_unit=self._config.default_amount_unit,
-        )
-        if not parsed:
             self._safe_send_message(
                 chat_id,
-                "형식이 맞지 않아요. 예: `이발 3만`, `염색 4만`, `충전 30만`",
+                confirmation,
+                reply_to_message_id=message_id,
+            )
+            return ServiceResult(
+                ok=True,
+                message="event_created",
+                balance_won=next_balance,
+                event_title=title,
+                event_id=created_event.event_id,
+            ).to_dict()
+        except StateStoreUnavailableError:
+            LOGGER.exception("State store unavailable while handling update_id=%s", update_id)
+            self._safe_send_message(
+                chat_id,
+                "현재 데이터베이스에 연결하지 못했어요. "
+                "`DATABASE_URL` 설정과 Neon 상태를 확인한 뒤 "
+                "같은 내용을 다시 보내 주세요.",
                 reply_to_message_id=message_id,
             )
             if isinstance(update_id, int):
                 self._store.mark(update_id)
-            return ServiceResult(ok=False, message="invalid_format").to_dict()
-
-        current_balance = self._get_current_balance(event_time)
-        next_balance = current_balance + parsed.delta_won
-
-        duration_minutes = self._config.default_event_duration_minutes
-        if parsed.kind == "charge":
-            duration_minutes = self._config.recharge_event_duration_minutes
-
-        title = build_event_title(
-            self._config.event_prefix,
-            parsed.label,
-            parsed.amount_won,
-            next_balance,
-        )
-        description = "\n".join(
-            [
-                f"raw_message={parsed.raw_text}",
-                f"label={parsed.normalized_label}",
-                f"delta_won={parsed.delta_won}",
-                f"balance_won={next_balance}",
-                f"chat_id={chat_id}",
-                f"message_id={message_id}",
-                f"update_id={update_id}",
-            ]
-        )
-        created_event = self._calendar_client.create_event(
-            summary=title,
-            description=description,
-            start_time=event_time,
-            end_time=event_time + timedelta(minutes=duration_minutes),
-        )
-
-        ledger_entry = {
-            "processed_at": datetime.now(tz=self._tz).isoformat(),
-            "event_time": event_time.isoformat(),
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "update_id": update_id,
-            "title": title,
-            "raw_message": parsed.raw_text,
-            "delta_won": parsed.delta_won,
-            "balance_won": next_balance,
-            "calendar_event_id": created_event.event_id,
-            "calendar_event_link": created_event.html_link,
-        }
-        append_ledger_entry(self._config.ledger_file, ledger_entry)
-        self._save_current_balance(next_balance)
-        self._append_history(
-            StoredHistoryItem(
-                action=parsed.kind,
-                label=parsed.label,
-                delta_won=parsed.delta_won,
-                balance_won=next_balance,
-                event_time=event_time.isoformat(),
-                amount_label=parsed.amount_label,
-            )
-        )
-        if isinstance(update_id, int):
-            self._store.mark(update_id)
-
-        confirmation = "\n".join(
-            [
-                f"{parsed.label} 처리 완료",
-                f"변동 {format_delta(parsed.delta_won)}",
-                f"잔액 {next_balance:,}원",
-                title,
-            ]
-        )
-        self._safe_send_message(
-            chat_id,
-            confirmation,
-            reply_to_message_id=message_id,
-        )
-        return ServiceResult(
-            ok=True,
-            message="event_created",
-            balance_won=next_balance,
-            event_title=title,
-            event_id=created_event.event_id,
-        ).to_dict()
+            return ServiceResult(ok=False, message="state_store_unavailable").to_dict()
 
     def _handle_command(self, text: str, chat_id: int, message_id: int | None) -> ServiceResult:
         command = text.split()[0].split("@", 1)[0].lower()
@@ -342,7 +360,7 @@ class HaircutBotService:
             if not self._state_store.enabled:
                 self._safe_send_message(
                     chat_id,
-                    "Redis가 아직 연결되지 않았어요. Upstash를 먼저 연결해 주세요.",
+                    "데이터베이스가 아직 연결되지 않았어요. `DATABASE_URL`을 먼저 설정해 주세요.",
                     reply_to_message_id=message_id,
                 )
                 return ServiceResult(ok=False, message="state_store_not_configured")
@@ -474,6 +492,9 @@ class HaircutBotService:
         code = params.get("code", "")
         if not raw_state or not code:
             raise RuntimeError("Missing OAuth state or authorization code.")
+
+        if not self._state_store.enabled:
+            raise RuntimeError("DATABASE_URL is not configured.")
 
         state = self._oauth_client.verify_state(raw_state)
         tokens = self._oauth_client.exchange_code(code)

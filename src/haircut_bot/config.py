@@ -38,8 +38,7 @@ class AppConfig:
     google_oauth_redirect_uri: str
     google_oauth_state_secret: str
     google_oauth_user_email: str
-    redis_rest_url: str
-    redis_rest_token: str
+    database_url: str
     processed_updates_file: Path
     ledger_file: Path
 
@@ -151,13 +150,10 @@ def load_config(base_dir: str | None = None) -> AppConfig:
         google_oauth_redirect_uri=google_oauth_redirect_uri,
         google_oauth_state_secret=os.getenv("GOOGLE_OAUTH_STATE_SECRET", "").strip(),
         google_oauth_user_email=os.getenv("GOOGLE_OAUTH_USER_EMAIL", "").strip(),
-        redis_rest_url=(
-            os.getenv("KV_REST_API_URL", "").strip()
-            or os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
-        ),
-        redis_rest_token=(
-            os.getenv("KV_REST_API_TOKEN", "").strip()
-            or os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        database_url=(
+            os.getenv("DATABASE_URL", "").strip()
+            or os.getenv("POSTGRES_URL", "").strip()
+            or os.getenv("POSTGRES_PRISMA_URL", "").strip()
         ),
         processed_updates_file=root / processed_updates_file,
         ledger_file=root / ledger_file,

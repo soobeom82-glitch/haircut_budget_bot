@@ -34,8 +34,7 @@ def build_config() -> AppConfig:
         google_oauth_redirect_uri="https://haircut-budget-bot.vercel.app/google/oauth/callback",
         google_oauth_state_secret="state-secret",
         google_oauth_user_email="greg.47@kakaocorp.com",
-        redis_rest_url="",
-        redis_rest_token="",
+        database_url="postgresql://user:pass@example.neon.tech/haircut?sslmode=require",
         processed_updates_file=Path("/tmp/a"),
         ledger_file=Path("/tmp/b"),
     )

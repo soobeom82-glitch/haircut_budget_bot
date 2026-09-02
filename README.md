@@ -3,7 +3,7 @@
 텔레그램 채팅방에 `이발 3만`, `염색 4만`, `충전 30만`처럼 입력하면:
 
 - 메시지 시각을 기준으로 구글 캘린더에 일정을 생성하고
-- Redis에 저장된 현재 잔액을 읽어 예치금을 계산한 뒤
+- Postgres에 저장된 현재 잔액을 읽어 예치금을 계산한 뒤
 - 새 잔액을 반영한 제목으로 저장합니다.
 
 예시 제목:
@@ -26,7 +26,7 @@
 
 1. 텔레그램 웹훅이 메시지를 받습니다.
 2. 메시지에서 항목명과 금액을 파싱합니다.
-3. Redis에 저장된 현재 잔액을 읽습니다.
+3. Postgres에 저장된 현재 잔액을 읽습니다.
 4. 값이 없으면 `INITIAL_BALANCE_WON`을 시작 금액으로 씁니다.
 5. 새 잔액을 계산합니다.
 6. 메시지가 발생한 시각으로 새 캘린더 이벤트를 만듭니다.
@@ -49,7 +49,7 @@
 4. 연결할 구글 캘린더의 `설정 및 공유`에서 서비스 계정 이메일에 `일정 변경` 권한을 부여합니다.
 5. 다운로드한 JSON 파일 경로를 `GOOGLE_SERVICE_ACCOUNT_FILE`에 넣습니다.
 
-이 봇은 서비스 계정으로 캘린더를 읽고 씁니다. 캘린더는 거래 이력 저장용이고, 현재 잔액 원장은 Redis에 저장합니다.
+이 봇은 서비스 계정으로 캘린더를 읽고 씁니다. 캘린더는 거래 이력 저장용이고, 현재 잔액 원장은 Postgres에 저장합니다.
 
 ### 3. 환경 변수
 
@@ -59,9 +59,9 @@
 
 - `GOOGLE_CALENDAR_ID`: `primary` 또는 특정 캘린더 ID
 - `EVENT_PREFIX`: 제목 앞에 항상 붙일 텍스트. 예: `서하 은호`
-- `INITIAL_BALANCE_WON`: Redis에 아직 잔액이 없을 때 시작 금액
+- `INITIAL_BALANCE_WON`: DB에 아직 잔액이 없을 때 시작 금액
 - `TELEGRAM_ALLOWED_CHAT_IDS`: 허용할 채팅방 ID. 비워두면 모든 채팅 허용
-- `KV_REST_API_URL`, `KV_REST_API_TOKEN`: Upstash Redis 연결 정보
+- `DATABASE_URL`: Neon Postgres 연결 정보
 
 ## 실행
 
@@ -92,8 +92,7 @@ https://<your-vercel-domain>/telegram/webhook
 - `GOOGLE_CALENDAR_ID`
 - `GOOGLE_SERVICE_ACCOUNT_FILE` 대신 `GOOGLE_SERVICE_ACCOUNT_JSON` 권장
 - `COMPANY_GOOGLE_CALENDAR_ID`
-- `KV_REST_API_URL`
-- `KV_REST_API_TOKEN`
+- `DATABASE_URL`
 - `PUBLIC_BASE_URL`
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
@@ -108,11 +107,12 @@ https://<your-vercel-domain>/telegram/webhook
 
 ### 추천 저장소
 
-Vercel 기준 무료 DB로는 `Upstash Redis`를 추천합니다.
+Vercel 기준 무료 DB로는 `Neon Postgres`를 추천합니다.
 
-- 잔액처럼 작은 상태값 저장에 충분합니다.
-- Vercel Marketplace로 연결하면 `KV_REST_API_URL`, `KV_REST_API_TOKEN`이 자동으로 들어옵니다.
-- 이 프로젝트는 별도 SDK 없이 REST 방식으로 바로 붙도록 구현돼 있습니다.
+- 무료 플랜으로 시작하기 쉽습니다.
+- Vercel Marketplace로 연결하면 `DATABASE_URL`이 자동으로 들어옵니다.
+- 이 프로젝트는 별도 ORM 없이 SQL로 바로 붙도록 구현돼 있습니다.
+- 잔액, 최근 이력, 회사 캘린더 OAuth 토큰까지 한곳에 저장합니다.
 
 ### 주의 사항
 
@@ -151,5 +151,6 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 
 - 처리된 업데이트는 `.data/processed_updates.json`에 저장해서 중복 등록을 막습니다.
 - 처리 내역은 `.data/ledger.jsonl`에 남습니다.
+- DB 스키마는 첫 요청 때 자동 생성됩니다.
 - 일정 설명에는 원문 메시지, 증감액, 잔액, 텔레그램 메시지 ID가 함께 기록됩니다.
 - `DEFAULT_EVENT_DURATION_MINUTES`로 기본 일정 길이를 바꿀 수 있습니다.
